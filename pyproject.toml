@@ -1,0 +1,19 @@
+[project]
+name = "shining-chatbot"
+version = "0.1.0"
+description = "A simple Streamlit chatbot page"
+readme = "README.md"
+authors = [
+    { name = "kimgomja", email = "kimgomja1234@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "streamlit>=1.64.0",
+]
+
+[project.scripts]
+shining-chatbot = "shining_chatbot:main"
+
+[build-system]
+requires = ["uv_build>=0.12.6,<0.13.0"]
+build-backend = "uv_build"
