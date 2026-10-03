@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from datetime import date
+import re
 from uuid import uuid4
 
 import pandas as pd
+
+from shining_chatbot.record_pattern import SEASONS, season_index
 
 
 REGION_ALIASES = {
@@ -55,6 +58,33 @@ def answer_data_question(
     history: list[dict],
 ) -> dict | None:
     """Return a local-data response, or None for a document RAG question."""
+    compact = re.sub(r"\s+", "", question).lower()
+    weather_question = any(term in compact for term in (
+        "날씨", "기상", "기온", "강수", "비오는날", "비가오는날", "비올때", "비오면",
+        "눈오는날", "폭염", "한파", "장마", "강풍", "호우", "더울때", "더운날", "추울때", "추운날",
+    ))
+    incident_question = any(term in compact for term in ("사고", "재해"))
+    pattern_terms = (
+        "통계", "건수", "몇건", "추이", "경향", "패턴", "계절별", "계절마다", "상관", "영향",
+        "비교", "차이", "달라", "관계있", "따라다르", "발생률",
+        "많아", "많았", "많을", "더많", "높아", "높았", "더높", "증가", "감소", "더자주",
+    )
+    pattern_question = any(term in compact for term in pattern_terms)
+    if weather_question and incident_question and pattern_question:
+        return {
+            "role": "assistant",
+            "status": "data_limit",
+            "content": (
+                "현재 사고 CSV에는 사고 당시 날씨·기온·강수 열이 없어 날씨별 사고 건수나 상관관계를 계산할 수 없습니다. "
+                "현장 위치를 연결한 오늘·내일 예보는 확인할 수 있지만, 현재 예보는 과거 사고 당시 기상 기록이 아닙니다. "
+                "날씨 영향을 분석하려면 사고 시각·현장 기상 관측과 함께 작업량·노출 시간 범위도 기록해야 합니다."
+            ),
+        }
+    season_question = (
+        incident_question
+        and any(term in compact for term in ("계절별", "계절마다", "봄", "여름", "가을", "겨울"))
+        and pattern_question
+    )
     monthly = any(term in question for term in ("월간", "월별", "매월")) and any(
         term in question for term in ("그래프", "차트", "추이", "발생", "사고", "보여", "그려")
     )
@@ -74,7 +104,7 @@ def answer_data_question(
             context_note = f"직전에 물어본 {previous_region} 기록은 현재 CSV에 없어 전체 지역의 그래프를 보여드립니다. "
         else:
             region = previous_region
-    if not monthly and region is None:
+    if not monthly and not season_question and region is None:
         return None
 
     selected = _matching_rows(frame, region)
@@ -89,6 +119,21 @@ def answer_data_question(
             "role": "assistant",
             "status": "data_answer",
             "content": f"현재 **{source_label}**에 **{subject} 사고 기록이 없습니다.** {next_step}",
+        }
+
+    if season_question:
+        seasonal_counts = selected["발생일"].dt.month.map(season_index).value_counts().reindex(range(4), fill_value=0)
+        counts = " · ".join(f"{SEASONS[index]} {int(value):,}건" for index, value in seasonal_counts.items())
+        return {
+            "role": "assistant",
+            "status": "data_answer",
+            "content": (
+                f"**{source_label} · {subject} 계절별 사고 기록** · "
+                f"{selected['발생일'].min():%Y.%m.%d}–{selected['발생일'].max():%Y.%m.%d}\n\n"
+                f"{counts}\n\n"
+                "발생일의 달력상 계절로 센 건수입니다. 당시 기상 상태나 작업량·근로자 수를 보정한 사고율, "
+                "계절이 사고에 미친 영향은 뜻하지 않습니다."
+            ),
         }
 
     if monthly:

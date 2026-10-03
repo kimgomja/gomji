@@ -27,6 +27,21 @@ html,body,[data-testid="stAppViewContainer"],[data-testid="stSidebar"],[data-tes
 html,body,[data-testid="stAppViewContainer"] { color:var(--ink); font-size:15px; line-height:1.58; }
 [data-testid="stAppViewContainer"],[data-testid="stHeader"] { background:var(--canvas); }
 .block-container { max-width:1530px; padding:52px 30px 64px; }
+@media(max-width:900px) {
+  [data-testid="stApp"] { top:0 !important; left:0 !important; width:100vw !important; height:100dvh !important; transform:none; border:0; border-radius:0; box-shadow:none; }
+  [data-testid="stSidebar"] { width:min(250px,78vw) !important; min-width:min(250px,78vw) !important; max-width:min(250px,78vw) !important; }
+  .block-container { max-width:none; padding:42px 18px 58px; }
+}
+@media(max-width:560px) {
+  .block-container { padding:38px 13px 52px; }
+  .scroll-top-link { right:12px; bottom:12px; }
+  .workspace-bar { align-items:flex-start; }
+}
+.scroll-top-link { position:fixed; right:28px; bottom:24px; z-index:999; display:flex; align-items:center; gap:7px; padding:9px 13px; border:1px solid #D6DFD6; border-radius:7px; background:#FFFFFFF2; box-shadow:0 5px 18px rgba(34,48,37,.12); color:#405A46 !important; font-size:11px; font-weight:560; text-decoration:none !important; backdrop-filter:blur(8px); transition:background .16s,border-color .16s,transform .16s; }
+.scroll-top-link:hover { background:#F1F6F0; border-color:#B8CCBA; transform:translateY(-2px); }
+.scroll-top-link:focus-visible { outline:2px solid #73947A; outline-offset:3px; }
+@media(max-width:640px) { .scroll-top-link { right:13px; bottom:14px; padding:8px 11px; } }
+@media(prefers-reduced-motion:reduce) { .scroll-top-link { transition:none; } }
 [data-testid="stMarkdownContainer"] p { line-height:1.58; }
 [data-testid="stSidebar"] { background:#ECEFEB; border-right:1px solid #DDE2DC; width:clamp(172px,18.5vw,250px) !important; min-width:clamp(172px,18.5vw,250px) !important; max-width:clamp(172px,18.5vw,250px) !important; }
 [data-testid="stSidebar"] [data-testid="stSidebarUserContent"] { padding:22px 13px 25px; }
@@ -260,11 +275,17 @@ hr { border-color:var(--line); }
 @media (max-width:580px) { .severity-visual { justify-content:flex-start; } .donut-svg { width:43%; } .infographic-panel { padding:15px; } .infographic-highlight strong { font-size:24px; } .simple-intro { min-height:160px; padding:20px; background-position:62% center; } .simple-intro > * { max-width:76%; } .simple-intro::before { background:linear-gradient(90deg,#FFFFFFF8 0%,#FFFFFFE9 55%,#FFFFFF55 100%); } }
 @media (max-width:580px) { .st-key-feature_grid [data-testid="stHorizontalBlock"],.st-key-distribution_grid [data-testid="stHorizontalBlock"],.st-key-quick_grid [data-testid="stHorizontalBlock"] { flex-wrap:wrap !important; } .st-key-feature_grid [data-testid="stColumn"],.st-key-distribution_grid [data-testid="stColumn"] { flex:1 1 100% !important; width:100% !important; } .st-key-quick_grid [data-testid="stColumn"] { flex:1 1 44% !important; width:44% !important; } .hero { background-position:68% center; } .hero p { max-width:215px; } .filter-strip { align-items:flex-start; } .filter-tabs { max-width:100%; overflow:auto; } }
 @media (max-width:780px) { .chat-page-heading { align-items:flex-start; flex-direction:column; } .chat-source-mark { display:none; } }
+@media (max-width:780px) { [data-testid="stHorizontalBlock"]:has(.st-key-chat_options) { flex-wrap:wrap !important; } [data-testid="stHorizontalBlock"]:has(.st-key-chat_options) > [data-testid="stColumn"] { flex:1 1 100% !important; width:100% !important; } }
+@media (max-width:580px) { .st-key-chat_field_shortcuts [data-testid="stHorizontalBlock"] { flex-wrap:wrap !important; } .st-key-chat_field_shortcuts [data-testid="stColumn"] { flex:1 1 calc(50% - 5px) !important; width:calc(50% - 5px) !important; } }
 @media (prefers-reduced-motion:reduce) { .feature-card,.distribution-card,.distribution-bar,.distribution-bar::after,.sparkline polyline,.spark-guide,.spark-bar,.spark-popover,.period-focus,.period-column,.period-axis,.month-popover,.donut-segment,.donut-default,.donut-hover-value,.severity-legend-row,.rank-row,.rank-track span { transition:none !important; } }
 </style>
 """,
         unsafe_allow_html=True,
     )
+
+
+def render_back_to_top() -> None:
+    st.markdown('<a class="scroll-top-link" href="#page-top" aria-label="페이지 맨 위로 이동">↑ <span>맨 위로</span></a>', unsafe_allow_html=True)
 
 
 def render_sidebar_brand() -> None:

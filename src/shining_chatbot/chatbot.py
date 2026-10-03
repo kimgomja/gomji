@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from datetime import date
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -12,7 +13,14 @@ import pandas as pd
 import streamlit as st
 
 from shining_chatbot.chat_data import answer_data_question, chart_frame
+from shining_chatbot.business_time import today_korea
+from shining_chatbot.field_chat import field_intent, field_quick_answer, requested_weather_day
+from shining_chatbot.field_session import clear_site_context
 from shining_chatbot.infographics import monthly_infographic
+from shining_chatbot.plan_revision import make_revision
+from shining_chatbot.tbm_data import daily_items
+from shining_chatbot.weather_data import forecast_summary, work_weather_notes
+from shining_chatbot.weather_panel import weather_for_day
 from shining_chatbot.work_plan import WorkPlan, read_work_plan
 
 
@@ -144,18 +152,22 @@ def show_chatbot(incidents: pd.DataFrame, source_name: str, is_sample: bool, dat
     missing = _missing_files(root)
     has_key = _has_api_key(root)
     ready = not missing
+    field_plan: WorkPlan | None = st.session_state.get("field_plan")
+    field_day = st.session_state.get("field_day")
+    if not isinstance(field_day, date):
+        field_day = today_korea()
 
     st.markdown(
         '<div class="chat-page-heading"><div><span>INCIDENT INTELLIGENCE / ASSISTANT</span>'
-        '<h2>사고 데이터와 근거 문서에 질문하기</h2><p>지역·월별 사고는 현재 CSV에서 조회하고, '
-        '안전 질문은 SIF·사고조사보고서·KOSHA GUIDE의 근거로 답합니다.</p></div>'
-        '<div class="chat-source-mark">CSV + 3 SOURCES</div></div>',
+        '<h2>현장 작업과 근거 문서에 질문하기</h2><p>작업·조치·TBM 상태는 현재 계획에서 바로 답하고, '
+        '오늘·내일·모레 날씨는 연결한 현장 위치의 예보로 확인합니다. 사고 사례는 SIF·사고조사보고서·KOSHA GUIDE의 근거로 답합니다.</p></div>'
+        f'<div class="chat-source-mark">{"CSV + 3 SOURCES" if ready else "FIELD + CSV"}</div></div>',
         unsafe_allow_html=True,
     )
     if missing:
-        st.error(
-            f"SANUP-P 자료 연결을 확인해 주세요: {root}. "
-            f"필요한 파일 {len(missing)}개를 찾지 못했습니다."
+        st.info(
+            f"현장 작업·조치·TBM 질문과 CSV 조회는 사용할 수 있습니다. "
+            f"SANUP-P 문서 검색은 {root}의 필요 파일 {len(missing)}개가 없어 연결되지 않았습니다."
         )
     elif not has_key:
         st.info("OpenAI API 키가 없어 문자 검색으로 근거 문서만 보여줍니다. 답변 생성은 SANUP-P의 .env에 키를 설정하면 사용할 수 있습니다.")
@@ -197,11 +209,20 @@ def show_chatbot(incidents: pd.DataFrame, source_name: str, is_sample: bool, dat
                             elif existing and any(item.work_id == chosen.work_id for item in existing.items):
                                 st.info("이 작업ID는 이미 오늘의 작업 목록에 있습니다.")
                             else:
-                                st.session_state["field_plan"] = WorkPlan(
+                                if existing is None:
+                                    clear_site_context(
+                                        st.session_state,
+                                        preserve=("chat_work_file", "chat_attached_item"),
+                                    )
+                                updated = WorkPlan(
                                     attached.site,
                                     tuple(sorted((*existing.items, chosen), key=lambda item: (item.day, item.start))) if existing else (chosen,),
                                     existing.issues if existing else attached.issues,
+                                    existing.no_work_confirmations if existing else (),
                                 )
+                                st.session_state["field_plan"] = updated
+                                revision = make_revision(existing, updated, work_file.name)
+                                st.session_state["field_revisions"] = (*st.session_state.get("field_revisions", ()), revision)
                                 st.session_state["field_plan_name"] = work_file.name
                                 st.session_state.pop("field_plan_days", None)
                                 st.session_state["field_day"] = chosen.day
@@ -216,12 +237,13 @@ def show_chatbot(incidents: pd.DataFrame, source_name: str, is_sample: bool, dat
                 key="rag_context",
                 placeholder="예: 건설현장 이동식 사다리 점검",
                 height=86,
+                max_chars=1000,
             )
             if work_context.strip():
                 st.caption("선택한 작업 맥락이 아래 문서 검색 질문에 함께 적용됩니다.")
             with st.expander("검색 조건 더보기"):
-                industry = st.text_input("업종", key="rag_industry", placeholder="예: 건설업")
-                equipment = st.text_input("장비·기인물", key="rag_equipment", placeholder="예: 사다리")
+                industry = st.text_input("업종", key="rag_industry", placeholder="예: 건설업", max_chars=100)
+                equipment = st.text_input("장비·기인물", key="rag_equipment", placeholder="예: 사다리", max_chars=200)
             st.caption("이 조건은 근거 문서 검색에 적용됩니다. 지역·월별 질문은 현재 사고 CSV를 사용합니다.")
         with st.container(border=True, key="chat_reference"):
             st.markdown('<div class="chat-options-kicker">SOURCE POLICY</div><h3>답변 확인</h3>', unsafe_allow_html=True)
@@ -233,12 +255,36 @@ def show_chatbot(incidents: pd.DataFrame, source_name: str, is_sample: bool, dat
         if not st.session_state.rag_messages:
             st.markdown(
                 '<div class="chat-empty"><span>✳</span><h3>무엇을 확인할까요?</h3>'
-                '<p>작업·장비·사고 유형을 구체적으로 적으면 관련 문서를 찾기 쉽습니다.</p></div>',
+                '<p>선택일 작업과 남은 조치를 바로 확인하거나, 작업·장비를 적어 근거 사례를 찾으세요.</p></div>',
                 unsafe_allow_html=True,
             )
         for message in st.session_state.rag_messages:
             _show_message(message, incidents)
 
+        field_prompt = None
+        with st.container(key="chat_field_shortcuts"):
+            if field_plan is not None:
+                st.caption(f"현장 요약 기준일 · {field_day:%Y.%m.%d} · 오늘 주의사항은 오늘 날짜를 기준으로 합니다.")
+                attention_col, work_col, action_col = st.columns(3, gap="small")
+                with attention_col:
+                    if st.button("오늘 주의사항", width="stretch"):
+                        field_prompt = "오늘 주의사항"
+                with work_col:
+                    if st.button("선택일 작업 요약", width="stretch"):
+                        field_prompt = "선택일 작업 요약"
+                with action_col:
+                    if st.button("남은 조치", width="stretch"):
+                        field_prompt = "남은 조치"
+                status_col, change_col, weather_col = st.columns(3, gap="small")
+                with status_col:
+                    if st.button("TBM 준비 상태", width="stretch"):
+                        field_prompt = "TBM 준비 상태"
+                with change_col:
+                    if st.button("최근 계획 변경", width="stretch"):
+                        field_prompt = "최근 계획 변경"
+                with weather_col:
+                    if st.button("오늘 현장 날씨", width="stretch"):
+                        field_prompt = "오늘 현장 날씨"
         example_col, tbm_col = st.columns(2, gap="small")
         with example_col:
             example_clicked = st.button("현재 작업 사례 묻기" if work_context.strip() else "사다리 작업 사례 묻기", disabled=not ready, width="stretch")
@@ -249,7 +295,9 @@ def show_chatbot(incidents: pd.DataFrame, source_name: str, is_sample: bool, dat
                 width="stretch",
             )
         monthly_clicked = st.button("월별 사고 그래프 보기", width="stretch")
-        prompt = st.chat_input("지역·월별 사고 또는 안전 사례를 질문하세요")
+        prompt = st.chat_input("작업·조치·TBM·날씨, 지역·월·계절별 사고나 근거 사례를 질문하세요")
+        if field_prompt:
+            prompt = field_prompt
         if example_clicked:
             prompt = (
                 f"{work_context} 작업에서 {equipment or '사용 장비'}와 관련된 사고사례와 예방 조치를 근거와 함께 알려줘."
@@ -265,6 +313,31 @@ def show_chatbot(incidents: pd.DataFrame, source_name: str, is_sample: bool, dat
         history = st.session_state.rag_messages[-6:]
         user_message = {"role": "user", "content": prompt}
         st.session_state.rag_messages.append(user_message)
+        weather_text = ""
+        weather_notes = ()
+        answer_intent = field_intent(prompt)
+        weather_day = None
+        if field_plan and answer_intent in {"오늘주의사항", "현장날씨"}:
+            location = st.session_state.get("field_weather_location")
+            weather_day = requested_weather_day(prompt) if answer_intent == "현장날씨" else today_korea()
+            forecast = weather_for_day(weather_day) if location else None
+            if forecast is not None:
+                weather_text = forecast_summary(location, forecast)
+                weather_notes = work_weather_notes(
+                    tuple(item.activity for item in daily_items(field_plan, weather_day)), forecast,
+                )
+        field_answer = field_quick_answer(
+            prompt, field_plan, field_day,
+            st.session_state.get("field_reviews", {}),
+            tuple(st.session_state.get("field_actions", ())),
+            st.session_state.get("field_tbm_records", {}),
+            st.session_state.get("field_tbm_deliveries", {}),
+            tuple(st.session_state.get("field_revisions", ())),
+            weather_text, weather_notes, weather_day,
+        )
+        if field_answer is not None:
+            st.session_state.rag_messages.append(field_answer)
+            st.rerun()
         local_answer = answer_data_question(prompt, incidents, is_sample=is_sample, history=history)
         if local_answer is not None:
             st.session_state.rag_messages.append(local_answer)

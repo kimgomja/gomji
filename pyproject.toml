@@ -1,7 +1,7 @@
 [project]
 name = "shining-chatbot"
 version = "0.1.0"
-description = "A simple Streamlit chatbot page"
+description = "Streamlit workspace for field work plans, safety actions, TBM briefings, and accident records"
 readme = "README.md"
 authors = [
     { name = "kimgomja", email = "kimgomja1234@gmail.com" }

@@ -10,7 +10,10 @@ import pandas as pd
 import streamlit as st
 
 from shining_chatbot.chatbot import show_chatbot
+from shining_chatbot.action_dashboard import show_action_dashboard
 from shining_chatbot.field_dashboard import show_field_dashboard
+from shining_chatbot.tbm_dashboard import show_tbm_dashboard
+from shining_chatbot.pattern_dashboard import show_pattern_dashboard
 from shining_chatbot.incident_data import COLUMNS, SEVERITIES, read_incidents_csv, sample_incidents
 from shining_chatbot.infographics import monthly_infographic, ranking_infographic, severity_infographic
 from shining_chatbot.ui import (
@@ -18,6 +21,7 @@ from shining_chatbot.ui import (
     panel_heading,
     render_header,
     render_sidebar_brand,
+    render_back_to_top,
     section_heading,
 )
 
@@ -349,36 +353,46 @@ def show_guide(incidents: pd.DataFrame, source_name: str, is_sample: bool) -> No
 
 
 def main() -> None:
-    st.set_page_config(page_title="산업재해 현황 | Safety Atlas", page_icon="🦺", layout="wide")
+    st.set_page_config(page_title="현장 안전 운영 | Safety Atlas", page_icon="🦺", layout="wide")
     apply_styles()
+    st.markdown('<div id="page-top"></div>', unsafe_allow_html=True)
     route = st.query_params.get("page")
-    if route in ("field", "overview", "records", "guide", "chat"):
+    if route in ("field", "actions", "tbm", "patterns", "overview", "records", "guide", "chat"):
         st.session_state["view"] = route
-    if st.session_state.get("view") not in ("field", "overview", "records", "guide", "chat"):
+    if st.session_state.get("view") not in ("field", "actions", "tbm", "patterns", "overview", "records", "guide", "chat"):
         st.session_state["view"] = "field"
     view = st.session_state["view"]
 
     with st.sidebar:
         render_sidebar_brand()
-        st.markdown('<div class="sidebar-section">WORKSPACE</div>', unsafe_allow_html=True)
-        with st.container(gap=4):
-            for page, label, icon in (
+        groups = (
+            ("현장 운영", (
                 ("field", "오늘의 작업", ":material/today:"),
+                ("actions", "조치 현황", ":material/task_alt:"),
+                ("tbm", "TBM 브리핑", ":material/description:"),
+                ("patterns", "사고 기록 경향", ":material/bar_chart:"),
+            )),
+            ("자료 탐색", (
                 ("overview", "기존 현황", ":material/grid_view:"),
                 ("records", "사고 기록", ":material/list_alt:"),
                 ("guide", "데이터 안내", ":material/info:"),
                 ("chat", "근거 챗봇", ":material/forum:"),
-            ):
-                st.button(
-                    label,
-                    key=f"nav_{page}",
-                    icon=icon,
-                    type="tertiary",
-                    width="stretch",
-                    on_click=set_view,
-                    args=(page,),
-                    help="현재 화면" if view == page else None,
-                )
+            )),
+        )
+        for heading, pages in groups:
+            st.markdown(f'<div class="sidebar-section">{heading}</div>', unsafe_allow_html=True)
+            with st.container(gap=4):
+                for page, label, icon in pages:
+                    st.button(
+                        label,
+                        key=f"nav_{page}",
+                        icon=icon,
+                        type="tertiary",
+                        width="stretch",
+                        on_click=set_view,
+                        args=(page,),
+                        help="현재 화면" if view == page else None,
+                    )
         st.markdown(
             f'<style>[data-testid="stSidebar"] .st-key-nav_{view} button, '
             f'[data-testid="stSidebar"] .st-key-nav_{view} button:hover '
@@ -392,6 +406,31 @@ def main() -> None:
             st.markdown('<div class="sidebar-help">작업계획서에서 오늘 작업과 시작 전 확인할 항목을 가져옵니다.</div>', unsafe_allow_html=True)
             st.markdown('<div class="sidebar-foot">SAFETY ATLAS &nbsp; / &nbsp; FIELD OPERATIONS</div>', unsafe_allow_html=True)
         show_field_dashboard()
+        render_back_to_top()
+        return
+    if view == "actions":
+        with st.sidebar:
+            st.markdown('<div class="sidebar-section">FIELD ACTIONS</div>', unsafe_allow_html=True)
+            st.markdown('<div class="sidebar-help">담당자와 기한별 조치, 변경 기록을 확인합니다.</div>', unsafe_allow_html=True)
+            st.markdown('<div class="sidebar-foot">SAFETY ATLAS &nbsp; / &nbsp; FIELD OPERATIONS</div>', unsafe_allow_html=True)
+        show_action_dashboard()
+        render_back_to_top()
+        return
+    if view == "tbm":
+        with st.sidebar:
+            st.markdown('<div class="sidebar-section">FIELD BRIEFING</div>', unsafe_allow_html=True)
+            st.markdown('<div class="sidebar-help">작업 확인과 남은 조치를 묶어 작업자 공유용 브리핑을 만듭니다.</div>', unsafe_allow_html=True)
+            st.markdown('<div class="sidebar-foot">SAFETY ATLAS &nbsp; / &nbsp; FIELD OPERATIONS</div>', unsafe_allow_html=True)
+        show_tbm_dashboard()
+        render_back_to_top()
+        return
+    if view == "patterns":
+        with st.sidebar:
+            st.markdown('<div class="sidebar-section">SITE RECORDS</div>', unsafe_allow_html=True)
+            st.markdown('<div class="sidebar-help">관리 범위의 실제 사고 CSV를 연결해 날짜별 기록 건수를 봅니다.</div>', unsafe_allow_html=True)
+            st.markdown('<div class="sidebar-foot">SAFETY ATLAS &nbsp; / &nbsp; FIELD OPERATIONS</div>', unsafe_allow_html=True)
+        show_pattern_dashboard()
+        render_back_to_top()
         return
     with st.sidebar:
         st.markdown('<div class="sidebar-section">DATA SOURCE</div>', unsafe_allow_html=True)
@@ -427,6 +466,7 @@ def main() -> None:
             st.markdown('<div class="sidebar-foot">SAFETY ATLAS &nbsp; / &nbsp; INCIDENT OS<br>DOCUMENT INTELLIGENCE</div>', unsafe_allow_html=True)
         render_header("", "", 0, "", False, "chat")
         show_chatbot(incidents, source_name, uploaded_file is None, source_token)
+        render_back_to_top()
         return
 
     earliest = incidents["발생일"].min().date()
@@ -490,6 +530,7 @@ def main() -> None:
         show_records(filtered)
     else:
         show_guide(incidents, source_name, uploaded_file is None)
+    render_back_to_top()
 
 
 if __name__ == "__main__":
