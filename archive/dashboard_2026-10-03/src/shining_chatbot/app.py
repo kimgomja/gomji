@@ -10,7 +10,6 @@ import pandas as pd
 import streamlit as st
 
 from shining_chatbot.chatbot import show_chatbot
-from shining_chatbot.field_dashboard import show_field_dashboard
 from shining_chatbot.incident_data import COLUMNS, SEVERITIES, read_incidents_csv, sample_incidents
 from shining_chatbot.infographics import monthly_infographic, ranking_infographic, severity_infographic
 from shining_chatbot.ui import (
@@ -352,10 +351,10 @@ def main() -> None:
     st.set_page_config(page_title="산업재해 현황 | Safety Atlas", page_icon="🦺", layout="wide")
     apply_styles()
     route = st.query_params.get("page")
-    if route in ("field", "overview", "records", "guide", "chat"):
+    if route in ("overview", "records", "guide", "chat"):
         st.session_state["view"] = route
-    if st.session_state.get("view") not in ("field", "overview", "records", "guide", "chat"):
-        st.session_state["view"] = "field"
+    if st.session_state.get("view") not in ("overview", "records", "guide", "chat"):
+        st.session_state["view"] = "overview"
     view = st.session_state["view"]
 
     with st.sidebar:
@@ -363,8 +362,7 @@ def main() -> None:
         st.markdown('<div class="sidebar-section">WORKSPACE</div>', unsafe_allow_html=True)
         with st.container(gap=4):
             for page, label, icon in (
-                ("field", "오늘의 작업", ":material/today:"),
-                ("overview", "기존 현황", ":material/grid_view:"),
+                ("overview", "현황 분석", ":material/grid_view:"),
                 ("records", "사고 기록", ":material/list_alt:"),
                 ("guide", "데이터 안내", ":material/info:"),
                 ("chat", "근거 챗봇", ":material/forum:"),
@@ -386,13 +384,6 @@ def main() -> None:
             'border: 1px solid #252B26 !important; }</style>',
             unsafe_allow_html=True,
         )
-    if view == "field":
-        with st.sidebar:
-            st.markdown('<div class="sidebar-section">FIELD PLAN</div>', unsafe_allow_html=True)
-            st.markdown('<div class="sidebar-help">작업계획서에서 오늘 작업과 시작 전 확인할 항목을 가져옵니다.</div>', unsafe_allow_html=True)
-            st.markdown('<div class="sidebar-foot">SAFETY ATLAS &nbsp; / &nbsp; FIELD OPERATIONS</div>', unsafe_allow_html=True)
-        show_field_dashboard()
-        return
     with st.sidebar:
         st.markdown('<div class="sidebar-section">DATA SOURCE</div>', unsafe_allow_html=True)
         with st.expander("CSV 관리"):

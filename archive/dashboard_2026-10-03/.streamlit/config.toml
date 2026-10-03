@@ -1,0 +1,19 @@
+[server]
+enableStaticServing = true
+
+[theme]
+base = "light"
+primaryColor = "#202420"
+backgroundColor = "#F8F9F7"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#242924"
+linkColor = "#3E6256"
+font = "'Pretendard Variable':https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css, sans-serif"
+baseFontSize = 15
+baseFontWeight = 400
+metricValueFontSize = "2rem"
+metricValueFontWeight = 600
+baseRadius = "0.625rem"
+buttonRadius = "0.5rem"
+borderColor = "#E5E8E4"
+dataframeBorderColor = "#E5E8E4"

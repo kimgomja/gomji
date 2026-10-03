@@ -1,0 +1,267 @@
+"""Separate Streamlit page for the SANUP-P source-grounded chatbot."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+from pathlib import Path
+from urllib.parse import urlparse
+
+import pandas as pd
+import streamlit as st
+
+from shining_chatbot.chat_data import answer_data_question, chart_frame
+from shining_chatbot.infographics import monthly_infographic
+
+
+DEFAULT_ROOT = Path(r"C:\SANUP-P")
+SOURCE_OPTIONS = {
+    "전체 자료": "all",
+    "SIF 사고사례": "sif",
+    "사고조사보고서": "moel_report",
+    "KOSHA GUIDE": "kosha_guide",
+}
+SEARCH_OPTIONS = {
+    "의미 검색": "semantic",
+    "문자·의미 혼합": "hybrid_rrf",
+    "문자 검색": "lexical",
+}
+ERROR_MESSAGES = {
+    "index_readonly": "SANUP-P 검색 색인의 쓰기 권한이 없어 열지 못했습니다. 앱을 색인에 접근할 수 있는 사용자 계정으로 실행해 주세요.",
+    "index_invalid": "SANUP-P 검색 색인과 문서 데이터가 일치하지 않습니다. SANUP-P에서 색인 상태를 확인해 주세요.",
+    "semantic_key_missing": "의미 검색에 사용할 OpenAI API 키를 찾지 못했습니다. 키를 설정하거나 문자 검색을 선택해 주세요.",
+    "AuthenticationError": "OpenAI API 키 인증에 실패했습니다. SANUP-P의 API 키를 확인해 주세요.",
+    "PermissionDeniedError": "설정된 OpenAI 모델에 접근할 수 없습니다. SANUP-P의 OPENAI_MODEL 설정을 확인해 주세요.",
+    "NotFoundError": "설정된 OpenAI 모델을 찾지 못했습니다. SANUP-P의 OPENAI_MODEL 설정을 확인해 주세요.",
+    "RateLimitError": "OpenAI API 요청 한도에 도달했습니다. 계정 사용량과 결제 설정을 확인한 뒤 다시 시도해 주세요.",
+    "APIConnectionError": "OpenAI API에 연결하지 못했습니다. 네트워크 연결을 확인한 뒤 다시 시도해 주세요.",
+    "APITimeoutError": "OpenAI API 응답 시간이 초과됐습니다. 잠시 후 다시 시도해 주세요.",
+    "Timeout": "검색 또는 답변 시간이 초과됐습니다. 검색 조건을 좁혀 다시 시도해 주세요.",
+    "RuntimeUnavailable": "SANUP-P 가상환경을 실행하지 못했습니다. 연결 경로와 가상환경을 확인해 주세요.",
+    "InvalidResponse": "챗봇 실행 결과를 읽지 못했습니다. SANUP-P 실행 환경을 확인해 주세요.",
+}
+
+
+def _root() -> Path:
+    return Path(os.getenv("SANUP_P_ROOT", str(DEFAULT_ROOT))).expanduser()
+
+
+def _has_api_key(root: Path) -> bool:
+    if os.getenv("OPENAI_API_KEY", "").strip():
+        return True
+    try:
+        for line in (root / ".env").read_text(encoding="utf-8-sig").splitlines():
+            name, separator, value = line.partition("=")
+            if separator and name.strip() == "OPENAI_API_KEY" and value.strip().strip("\"'"):
+                return True
+    except OSError:
+        pass
+    return False
+
+
+def _missing_files(root: Path) -> list[str]:
+    required = (
+        ".venv/Scripts/python.exe",
+        "src/retriever.py",
+        "src/rag_chain.py",
+        "data/personal/corpus/chunks.jsonl",
+        "data/personal/corpus/index_meta.json",
+        "data/personal/corpus/index_meta_semantic.json",
+        "chroma_db/personal/chroma.sqlite3",
+    )
+    return [item for item in required if not (root / item).is_file()]
+
+
+def ask_sanup(root: Path, request: dict) -> dict:
+    bridge = Path(__file__).with_name("rag_bridge.py")
+    command = [str(root / ".venv/Scripts/python.exe"), "-X", "utf8", str(bridge), str(root)]
+    try:
+        completed = subprocess.run(
+            command,
+            input=json.dumps(request, ensure_ascii=False),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=150,
+            cwd=root,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "code": "Timeout", "answer": "", "sources": []}
+    except OSError:
+        return {"status": "error", "code": "RuntimeUnavailable", "answer": "", "sources": []}
+    try:
+        result = json.loads(completed.stdout.strip().splitlines()[-1])
+    except (IndexError, json.JSONDecodeError):
+        return {"status": "error", "code": "InvalidResponse", "answer": "", "sources": []}
+    if not isinstance(result, dict):
+        return {"status": "error", "code": "InvalidResponse", "answer": "", "sources": []}
+    return result
+
+
+def _show_sources(sources: list[dict], *, verified: bool = True) -> None:
+    if not sources:
+        return
+    label = "근거 문서" if verified else "검색된 문서"
+    with st.expander(f"{label} {len(sources)}건", expanded=True):
+        for source in sources:
+            number = source.get("number", "")
+            title = source.get("title") or "제목 없음"
+            organization = source.get("organization") or ""
+            page = source.get("page")
+            detail = " · ".join(
+                item for item in (organization, f"{page}쪽" if page else "") if item
+            )
+            with st.container(border=True):
+                st.markdown(f"**[{number}] {title}**")
+                if detail:
+                    st.caption(detail)
+                if source.get("ocr_review_required"):
+                    st.caption("OCR 자동 인식 · PDF 원문 대조 필요")
+                url = str(source.get("url") or "")
+                if urlparse(url).scheme in {"https", "http"}:
+                    st.link_button("원문 보기 ↗", url)
+
+
+def _show_message(message: dict, incidents: pd.DataFrame) -> None:
+    avatar = ":material/person:" if message["role"] == "user" else ":material/auto_awesome:"
+    with st.chat_message(message["role"], avatar=avatar):
+        content = message["content"] if message.get("tbm") else message["content"].replace("- [ ] ", "- ")
+        st.markdown(content)
+        if message["role"] == "assistant":
+            if chart := message.get("chart"):
+                chart_data, start, end = chart_frame(incidents, chart)
+                st.markdown(monthly_infographic(chart_data, start, end, chart.get("id", "chat-chart")), unsafe_allow_html=True)
+            _show_sources(message.get("sources") or [], verified=message.get("status") == "answered")
+
+
+def show_chatbot(incidents: pd.DataFrame, source_name: str, is_sample: bool, data_token: str) -> None:
+    root = _root()
+    missing = _missing_files(root)
+    has_key = _has_api_key(root)
+    ready = not missing
+
+    st.markdown(
+        '<div class="chat-page-heading"><div><span>INCIDENT INTELLIGENCE / ASSISTANT</span>'
+        '<h2>사고 데이터와 근거 문서에 질문하기</h2><p>지역·월별 사고는 현재 CSV에서 조회하고, '
+        '안전 질문은 SIF·사고조사보고서·KOSHA GUIDE의 근거로 답합니다.</p></div>'
+        '<div class="chat-source-mark">CSV + 3 SOURCES</div></div>',
+        unsafe_allow_html=True,
+    )
+    if missing:
+        st.error(
+            f"SANUP-P 자료 연결을 확인해 주세요: {root}. "
+            f"필요한 파일 {len(missing)}개를 찾지 못했습니다."
+        )
+    elif not has_key:
+        st.info("OpenAI API 키가 없어 문자 검색으로 근거 문서만 보여줍니다. 답변 생성은 SANUP-P의 .env에 키를 설정하면 사용할 수 있습니다.")
+
+    if st.session_state.get("_chat_data_token") != data_token:
+        st.session_state.rag_messages = []
+        st.session_state["_chat_data_token"] = data_token
+
+    chat_col, option_col = st.columns([1.75, 1], gap="medium")
+    with option_col:
+        with st.container(border=True, key="chat_options"):
+            st.markdown('<div class="chat-options-kicker">SEARCH SETTINGS</div><h3>검색 조건</h3>', unsafe_allow_html=True)
+            source_label = st.selectbox("자료 종류", list(SOURCE_OPTIONS), key="rag_source")
+            modes = list(SEARCH_OPTIONS) if has_key else ["문자 검색"]
+            mode_label = st.selectbox("검색 방식", modes, key="rag_mode")
+            work_context = st.text_area(
+                "현재 작업",
+                key="rag_context",
+                placeholder="예: 건설현장 이동식 사다리 점검",
+                height=86,
+            )
+            with st.expander("검색 조건 더보기"):
+                industry = st.text_input("업종", key="rag_industry", placeholder="예: 건설업")
+                equipment = st.text_input("장비·기인물", key="rag_equipment", placeholder="예: 사다리")
+            st.caption("이 조건은 근거 문서 검색에 적용됩니다. 지역·월별 질문은 현재 사고 CSV를 사용합니다.")
+        with st.container(border=True, key="chat_reference"):
+            st.markdown('<div class="chat-options-kicker">SOURCE POLICY</div><h3>답변 확인</h3>', unsafe_allow_html=True)
+            st.markdown("현재 사고 데이터는 **" + source_name + "**입니다. 문서 답변의 인용 번호는 아래 근거 문서와 대조하세요.")
+            st.caption("OCR 문장은 PDF 원문 확인이 필요합니다. 현장 위험성평가나 공식 지침을 대체하지 않습니다.")
+
+    with chat_col:
+        st.markdown('<div class="chat-conversation-head"><div><span>SAFETY ASSISTANT</span><h3>대화</h3></div></div>', unsafe_allow_html=True)
+        if not st.session_state.rag_messages:
+            st.markdown(
+                '<div class="chat-empty"><span>✳</span><h3>무엇을 확인할까요?</h3>'
+                '<p>작업·장비·사고 유형을 구체적으로 적으면 관련 문서를 찾기 쉽습니다.</p></div>',
+                unsafe_allow_html=True,
+            )
+        for message in st.session_state.rag_messages:
+            _show_message(message, incidents)
+
+        example_col, tbm_col = st.columns(2, gap="small")
+        with example_col:
+            example_clicked = st.button("사다리 작업 사례 묻기", disabled=not ready, width="stretch")
+        with tbm_col:
+            tbm_clicked = st.button(
+                "현재 작업 TBM 초안",
+                disabled=not ready or not has_key or not work_context.strip(),
+                width="stretch",
+            )
+        monthly_clicked = st.button("월별 사고 그래프 보기", width="stretch")
+        prompt = st.chat_input("지역·월별 사고 또는 안전 사례를 질문하세요")
+        if example_clicked:
+            prompt = "이동식 사다리 작업에서 확인할 사고사례와 예방 조치를 알려줘."
+        if tbm_clicked:
+            prompt = "현재 작업에 맞춰 검색된 사고사례와 안전지침에 근거한 TBM 시작 전 체크리스트를 작성해 주세요."
+        if monthly_clicked:
+            prompt = "전체 월별 사고 그래프 보여줘"
+        if not prompt:
+            return
+
+        history = st.session_state.rag_messages[-6:]
+        user_message = {"role": "user", "content": prompt}
+        st.session_state.rag_messages.append(user_message)
+        local_answer = answer_data_question(prompt, incidents, is_sample=is_sample, history=history)
+        if local_answer is not None:
+            st.session_state.rag_messages.append(local_answer)
+            st.rerun()
+        _show_message(user_message, incidents)
+        if not ready:
+            st.session_state.rag_messages.append({
+                "role": "assistant",
+                "status": "error",
+                "content": "SANUP-P 문서 색인에 연결할 수 없습니다. 왼쪽 CSV 관리에서 지역·월별 사고 질문은 계속 사용할 수 있습니다.",
+            })
+            st.rerun()
+        request = {
+            "question": prompt,
+            "source": SOURCE_OPTIONS[source_label],
+            "mode": SEARCH_OPTIONS[mode_label],
+            "work_context": work_context,
+            "industry_major": industry,
+            "equipment": equipment,
+            "history": history,
+            "tbm": tbm_clicked,
+        }
+        with st.chat_message("assistant", avatar=":material/auto_awesome:"):
+            with st.spinner("근거 문서를 검색하고 인용을 확인하는 중..."):
+                result = ask_sanup(root, request)
+            status = result.get("status")
+            if status == "answered":
+                answer = result.get("answer") or "답변을 받지 못했습니다."
+            elif status == "insufficient_evidence":
+                answer = "제공된 근거 자료에서 답을 확인할 수 없습니다. 작업·장비·사고 유형을 더 구체적으로 적어 주세요."
+            elif status == "llm_key_missing":
+                answer = "관련 문서는 찾았습니다. 답변 생성을 사용하려면 SANUP-P의 OpenAI API 키를 설정해 주세요."
+            elif status in {"unsupported_citation", "malformed_quantity", "empty_response"}:
+                answer = "관련 문서는 찾았지만 생성된 답변의 인용을 검증하지 못했습니다. 아래 검색 문서를 직접 확인하거나 질문을 더 구체적으로 적어 주세요."
+            elif status == "error":
+                code = str(result.get("code") or "UnknownError")
+                answer = ERROR_MESSAGES.get(code, f"검색 실행 중 오류가 발생했습니다. 오류 코드: {code}. 이 코드를 알려주시면 원인을 확인하겠습니다.")
+            else:
+                answer = f"답변 상태를 확인할 수 없습니다. 상태 코드: {status or 'unknown'}."
+            st.markdown(answer)
+            sources = (result.get("sources") or []) if status in {"answered", "llm_key_missing", "unsupported_citation", "malformed_quantity", "empty_response"} else []
+            _show_sources(sources, verified=status == "answered")
+        st.session_state.rag_messages.append(
+            {"role": "assistant", "content": answer, "sources": sources, "tbm": tbm_clicked, "status": status}
+        )
+        st.rerun()

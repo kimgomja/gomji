@@ -8,3 +8,11 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Local credentials
+secrets.toml
+.streamlit/secrets.toml
+.env
+
+# Local visual debug capture
+outputs/field_dashboard_initial.png
