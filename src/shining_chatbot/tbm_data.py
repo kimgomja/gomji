@@ -8,7 +8,7 @@ from datetime import date, datetime
 from hashlib import sha256
 from html import escape
 
-from shining_chatbot.action_data import FieldAction
+from shining_chatbot.action_data import FieldAction, action_attention_flags, action_due_kst
 from shining_chatbot.business_time import now_korea
 from shining_chatbot.work_plan import WorkItem, WorkPlan, overlapping_pairs
 
@@ -125,9 +125,16 @@ def briefing_text(
     pairs = overlapping_pairs(plan.items, day)
     lines.extend(("", f"■ 같은 구역·시간 중복 후보 {len(pairs)}쌍"))
     lines.extend(f"- {a.activity} / {b.activity} · {a.area} · 동선·간섭 확인" for a, b in pairs)
-    open_actions = sorted((action for action in daily_actions(plan, day, actions) if action.status == "open"), key=lambda action: action.due_at)
+    at = now_korea()
+    open_actions = sorted(
+        (action for action in daily_actions(plan, day, actions) if action.status == "open"),
+        key=action_due_kst,
+    )
     lines.extend(("", f"■ 미완료 조치 {len(open_actions)}건"))
-    lines.extend(f"- {action.description} · {action.assignee} · {action.due_at:%m.%d %H:%M}" for action in open_actions)
+    for action in open_actions:
+        flags = action_attention_flags(action, at)
+        prefix = " · ".join(flags) + " · " if flags else ""
+        lines.append(f"- {prefix}{action.description} · {action.assignee} · {action_due_kst(action):%m.%d %H:%M}")
     if record:
         lines.extend(("", f"관리자 확인: {record.confirmed_by} · {record.confirmed_at:%Y.%m.%d %H:%M}", f"공유 대상: {record.audience}"))
         if record.note:
@@ -148,7 +155,7 @@ def briefing_html(
     items = daily_items(plan, day)
     related_actions = sorted(
         (action for action in daily_actions(plan, day, actions) if action.status == "open"),
-        key=lambda action: action.due_at,
+        key=action_due_kst,
     )
     work_rows = "".join(
         '<section class="work"><div class="time">'
@@ -167,11 +174,20 @@ def briefing_html(
         f'<li>{escape(a.activity)} / {escape(b.activity)} · {escape(a.area)} · 작업 시간 중복, 동선과 간섭 확인</li>'
         for a, b in pairs
     ) or '<li>같은 구역의 시간 중복 후보 없음</li>'
-    action_rows = "".join(
-        f'<li>{escape(action.description)}{(" · 계획 변경 재확인" if action.needs_review else "")} '
-        f'<span>{escape(action.assignee)} · {action.due_at:%m.%d %H:%M}</span></li>'
-        for action in related_actions
-    ) or '<li>등록된 미완료 조치 없음</li>'
+    action_rows_list = []
+    at = now_korea()
+    for action in related_actions:
+        due_at = action_due_kst(action)
+        flags = action_attention_flags(action, at)
+        flag_html = (
+            f'<strong class="action-flags">{escape(" · ".join(flags))} · </strong>'
+            if flags else ""
+        )
+        action_rows_list.append(
+            f'<li>{flag_html}{escape(action.description)} '
+            f'<span>{escape(action.assignee)} · {due_at:%m.%d %H:%M}</span></li>'
+        )
+    action_rows = "".join(action_rows_list) or '<li>등록된 미완료 조치 없음</li>'
     state = "관리자 확인본" if record else "확인 전 초안"
     footer = (
         f'진행자 {escape(record.confirmed_by)} · 공유 대상 {escape(record.audience)} · '
@@ -206,6 +222,7 @@ main{{width:min(840px,calc(100% - 32px));margin:32px auto;background:#fff;border
 h2{{font-size:15px;letter-spacing:-.02em;margin:0 0 3px}}h3{{font-size:13px;margin:27px 0 10px}}.work{{display:grid;grid-template-columns:80px 1fr;gap:18px;border-top:1px solid #E8EEE8;padding:17px 0}}.time{{color:#4F7257;font-weight:650}}.time span{{display:block;font-weight:400;color:#9BA79C}}
 .work p{{margin:5px 0;color:#536057}}.work p.meta{{font-size:11px;color:#89968B;margin-bottom:10px}}b{{color:#354B3A;font-weight:600}}
 ul{{margin:0;padding:0;list-style:none}}li{{border-top:1px solid #E8EEE8;padding:9px 0}}li span{{float:right;color:#748B79;font-size:11px}}
+.action-flags{{color:#8A673E;font-size:10px;font-weight:600}}
 footer{{border-top:1px solid #DFE7DF;margin-top:30px;padding-top:14px;color:#6F8173;font-size:11px}}.note{{margin-top:7px;color:#99A49B}}
 .manager-note{{margin-top:8px;color:#354B3A;font-size:13px;white-space:pre-wrap}}
 .weather{{padding:12px 15px;border-radius:6px;background:#F5F8F4;color:#3F5945;font-size:12px}}

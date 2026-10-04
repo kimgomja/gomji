@@ -7,8 +7,8 @@ from html import escape
 
 import streamlit as st
 
-from shining_chatbot.action_data import FieldAction
-from shining_chatbot.business_time import today_korea
+from shining_chatbot.action_data import FieldAction, action_attention_flags, action_due_kst
+from shining_chatbot.business_time import now_korea, today_korea
 from shining_chatbot.field_dashboard import _styles
 from shining_chatbot.plan_revision import day_revision_token
 from shining_chatbot.tbm_data import TbmDelivery, TbmRecord, brief_fingerprint, briefing_html, briefing_text, confirm_brief, daily_actions, daily_items, record_delivery
@@ -36,6 +36,7 @@ def _brief_styles() -> None:
 .tbm-state{font-size:10px;padding:4px 8px;border-radius:5px;background:#F8F1E5;color:#926D39;white-space:nowrap}.tbm-state.ok{background:#E9F2E9;color:#477651}
 .tbm-callout{padding:15px 17px;background:#F3F7F2;border:1px solid #E2EAE0;border-radius:7px;color:#405B47;font-size:12px;line-height:1.65;margin-top:14px}
 .tbm-callout strong{font-weight:600;color:#2A4632}
+.tbm-action-flag{color:#8A673E!important;font-weight:620!important}
 .tbm-callout ul{margin:7px 0 0;padding-left:18px}.tbm-callout li{margin:3px 0}
 .tbm-ready{display:flex;align-items:center;gap:12px;border:1px solid #CADFCB;background:#F4F9F3;padding:14px 17px;border-radius:8px;margin:20px 0 10px}
 .tbm-ready b{font-weight:620;color:#31563B}.tbm-ready span{color:#698272;font-size:11px}
@@ -75,7 +76,7 @@ def show_tbm_dashboard() -> None:
     related = daily_actions(plan, day, actions)
     open_actions = sorted(
         (action for action in related if action.status == "open"),
-        key=lambda action: action.due_at,
+        key=action_due_kst,
     )
     pending = [item for item in items if reviews.get(item.work_id, {}).get("status") != "확인 완료"]
     changed = [action for action in related if action.needs_review]
@@ -156,10 +157,20 @@ def show_tbm_dashboard() -> None:
     with right:
         st.markdown('<div class="tbm-section"><h2>남은 조치</h2><span>OPEN ACTIONS</span></div>', unsafe_allow_html=True)
         if open_actions:
-            lines = "".join(
-                f'<li>{escape(action.description)}{(" · 계획 변경 재확인" if action.needs_review else "")} · {escape(action.assignee)} · {action.due_at:%m.%d %H:%M}</li>'
-                for action in open_actions
-            )
+            at = now_korea()
+            rows = []
+            for action in open_actions:
+                due_at = action_due_kst(action)
+                flags = action_attention_flags(action, at)
+                prefix = (
+                    f'<strong class="tbm-action-flag">{escape(" · ".join(flags))} · </strong>'
+                    if flags else ""
+                )
+                rows.append(
+                    f'<li>{prefix}{escape(action.description)} · '
+                    f'{escape(action.assignee)} · {due_at:%m.%d %H:%M}</li>'
+                )
+            lines = "".join(rows)
             st.markdown(f'<div class="tbm-callout"><strong>담당자와 기한 확인</strong><ul>{lines}</ul></div>', unsafe_allow_html=True)
         else:
             st.markdown('<div class="tbm-callout">등록된 미완료 조치가 없습니다.</div>', unsafe_allow_html=True)
@@ -174,6 +185,14 @@ def show_tbm_dashboard() -> None:
         st.info(" · ".join(reasons) + "을 확인한 뒤 브리핑을 확정하세요.")
         if st.button("오늘의 작업에서 확인", key="tbm_review_work"):
             st.session_state["field_day"] = day
+            target = pending[0] if pending else next(
+                (item for item in items if any(action.work_id == item.work_id for action in changed)),
+                None,
+            )
+            if target is not None:
+                st.session_state["field_item_choice"] = (
+                    f"{target.start:%H:%M}  {target.activity} · {target.area} ({target.work_id})"
+                )
             _go_field()
     with st.form("tbm_confirm_form"):
         form_left, form_right = st.columns(2)

@@ -5,8 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from shining_chatbot.business_time import now_korea
+
+
+_KST = ZoneInfo("Asia/Seoul")
 
 
 @dataclass(frozen=True)
@@ -21,6 +25,33 @@ class FieldAction:
     needs_review: bool = False
     events: tuple[dict[str, str], ...] = ()
     work_day: date | None = None
+
+
+def action_due_kst(action: FieldAction) -> datetime:
+    """Interpret legacy naive values as KST and convert all aware values to KST."""
+    due_at = action.due_at
+    if due_at.tzinfo is None or due_at.utcoffset() is None:
+        return due_at.replace(tzinfo=_KST)
+    return due_at.astimezone(_KST)
+
+
+def is_action_overdue(action: FieldAction, at: datetime | None = None) -> bool:
+    """Use one KST wall-clock rule for overdue state across every page and export."""
+    checked_at = at or now_korea()
+    if checked_at.tzinfo is None or checked_at.utcoffset() is None:
+        checked_at = checked_at.replace(tzinfo=_KST)
+    else:
+        checked_at = checked_at.astimezone(_KST)
+    return action.status == "open" and action_due_kst(action) < checked_at
+
+
+def action_attention_flags(action: FieldAction, at: datetime | None = None) -> tuple[str, ...]:
+    flags = []
+    if action.needs_review:
+        flags.append("계획 변경 재확인")
+    if is_action_overdue(action, at):
+        flags.append("기한 지남")
+    return tuple(flags)
 
 
 def new_action(work_id: str, description: str, assignee: str, due_at: datetime, work_day: date | None = None) -> FieldAction:

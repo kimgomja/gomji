@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 import pandas as pd
 import streamlit as st
 
+from shining_chatbot.action_data import action_due_kst
 from shining_chatbot.chat_data import answer_data_question, chart_frame
 from shining_chatbot.business_time import today_korea
 from shining_chatbot.field_chat import field_intent, field_quick_answer, requested_weather_day
@@ -145,6 +146,53 @@ def _show_message(message: dict, incidents: pd.DataFrame) -> None:
                 chart_data, start, end = chart_frame(incidents, chart)
                 st.markdown(monthly_infographic(chart_data, start, end, chart.get("id", "chat-chart")), unsafe_allow_html=True)
             _show_sources(message.get("sources") or [], verified=message.get("status") == "answered")
+            cta = message.get("cta")
+            if isinstance(cta, dict) and cta.get("view") in {"field", "actions", "tbm"}:
+                if st.button(
+                    cta.get("label", "관련 화면 열기"),
+                    key=f"field_answer_cta_{message.get('id', 'latest')}",
+                ):
+                    target_day = None
+                    if isinstance(cta.get("day"), str):
+                        try:
+                            target_day = date.fromisoformat(cta["day"])
+                        except ValueError:
+                            target_day = None
+                    if target_day is not None:
+                        st.session_state["field_day"] = target_day
+                    target_view = cta["view"]
+                    if target_view == "field" and target_day is not None:
+                        plan: WorkPlan | None = st.session_state.get("field_plan")
+                        target_item = next(
+                            (item for item in plan.items if item.day == target_day), None,
+                        ) if plan else None
+                        if target_item is not None:
+                            st.session_state["field_item_choice"] = (
+                                f"{target_item.start:%H:%M}  {target_item.activity} · "
+                                f"{target_item.area} ({target_item.work_id})"
+                            )
+                    if target_view == "tbm" and target_day is not None:
+                        st.session_state["tbm_day"] = target_day
+                    elif target_view == "actions":
+                        st.session_state["field_action_filter"] = "미완료"
+                        st.session_state["field_action_query"] = ""
+                        action_id = cta.get("action_id")
+                        action = next(
+                            (entry for entry in st.session_state.get("field_actions", ()) if entry.action_id == action_id),
+                            None,
+                        )
+                        if action is not None:
+                            st.session_state["field_selected_action"] = (
+                                f"{action_due_kst(action):%m.%d %H:%M} · {action.description} ({action.action_id})"
+                            )
+                    st.session_state["view"] = target_view
+                    st.query_params["page"] = target_view
+                    st.rerun()
+
+
+def _clear_chat_context() -> None:
+    for key in ("rag_context", "rag_equipment", "rag_industry"):
+        st.session_state.pop(key, None)
 
 
 def show_chatbot(incidents: pd.DataFrame, source_name: str, is_sample: bool, data_token: str) -> None:
@@ -241,6 +289,10 @@ def show_chatbot(incidents: pd.DataFrame, source_name: str, is_sample: bool, dat
             )
             if work_context.strip():
                 st.caption("선택한 작업 맥락이 아래 문서 검색 질문에 함께 적용됩니다.")
+                st.button(
+                    "작업 조건 초기화", key="chat_clear_context",
+                    on_click=_clear_chat_context,
+                )
             with st.expander("검색 조건 더보기"):
                 industry = st.text_input("업종", key="rag_industry", placeholder="예: 건설업", max_chars=100)
                 equipment = st.text_input("장비·기인물", key="rag_equipment", placeholder="예: 사다리", max_chars=200)
@@ -251,7 +303,18 @@ def show_chatbot(incidents: pd.DataFrame, source_name: str, is_sample: bool, dat
             st.caption("OCR 문장은 PDF 원문 확인이 필요합니다. 현장 위험성평가나 공식 지침을 대체하지 않습니다.")
 
     with chat_col:
-        st.markdown('<div class="chat-conversation-head"><div><span>SAFETY ASSISTANT</span><h3>대화</h3></div></div>', unsafe_allow_html=True)
+        title_col, clear_col = st.columns([4, 1], vertical_alignment="center")
+        with title_col:
+            st.markdown('<div class="chat-conversation-head"><div><span>SAFETY ASSISTANT</span><h3>대화</h3></div></div>', unsafe_allow_html=True)
+        with clear_col:
+            if st.button(
+                "대화 지우기", key="chat_clear_messages",
+                disabled=not st.session_state.rag_messages,
+                help="현재 브라우저 세션에 표시된 질문과 답변을 지웁니다.",
+                width="stretch",
+            ):
+                st.session_state.rag_messages = []
+                st.rerun()
         if not st.session_state.rag_messages:
             st.markdown(
                 '<div class="chat-empty"><span>✳</span><h3>무엇을 확인할까요?</h3>'
@@ -294,7 +357,11 @@ def show_chatbot(incidents: pd.DataFrame, source_name: str, is_sample: bool, dat
                 disabled=not ready or not has_key or not work_context.strip(),
                 width="stretch",
             )
-        monthly_clicked = st.button("월별 사고 그래프 보기", width="stretch")
+        period_col, season_col = st.columns(2, gap="small")
+        with period_col:
+            monthly_clicked = st.button("월별 사고 그래프 보기", width="stretch")
+        with season_col:
+            season_clicked = st.button("계절별 사고 건수 보기", width="stretch")
         prompt = st.chat_input("작업·조치·TBM·날씨, 지역·월·계절별 사고나 근거 사례를 질문하세요")
         if field_prompt:
             prompt = field_prompt
@@ -307,6 +374,8 @@ def show_chatbot(incidents: pd.DataFrame, source_name: str, is_sample: bool, dat
             prompt = "현재 작업에 맞춰 검색된 사고사례와 안전지침에 근거한 TBM 시작 전 체크리스트를 작성해 주세요."
         if monthly_clicked:
             prompt = "전체 월별 사고 그래프 보여줘"
+        if season_clicked:
+            prompt = "계절별 사고 통계 보여줘"
         if not prompt:
             return
 

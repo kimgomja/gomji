@@ -13,10 +13,33 @@ import streamlit as st
 
 from shining_chatbot.business_time import today_korea
 from shining_chatbot.field_dashboard import _styles
-from shining_chatbot.record_pattern import SEASONS, RecordPattern, context_signals, read_pattern_csv, season_index, summarize_records
+from shining_chatbot.record_pattern import (
+    SEASONS,
+    RecordPattern,
+    context_signals,
+    read_pattern_csv,
+    season_index,
+    summarize_records,
+)
 
 
 _DAYS = ("월", "화", "수", "목", "금", "토", "일")
+
+
+def _csv_cell(value: str) -> str:
+    text = str(value)
+    first = text.lstrip(" \t\r\n\v\f\x00\ufeff")[:1]
+    return f"'{text}" if first in {"=", "+", "-", "@"} else text
+
+
+def _clear_incident_data(upload_version: int) -> None:
+    for key in (
+        "field_incident_frame", "field_incident_name", "field_incident_scope",
+        "field_incident_token", "field_incident_scope_input", "field_pattern_range", "field_pattern_type_filter",
+        "field_pattern_day",
+    ):
+        st.session_state.pop(key, None)
+    st.session_state["field_incident_upload_version"] = upload_version + 1
 
 
 def _pattern_styles() -> None:
@@ -36,6 +59,8 @@ def _pattern_styles() -> None:
 .pattern-season-head{display:flex;justify-content:space-between;gap:8px;align-items:baseline;color:#627467;font-size:10px}.pattern-season-head strong{font-size:15px;line-height:1.2;color:#334D39;font-weight:620}.pattern-season-track{height:4px;margin-top:9px;border-radius:3px;background:#EEF2EC;overflow:hidden}.pattern-season-fill{height:100%;border-radius:3px;background:linear-gradient(90deg,#C8DCC8,#789B7B);transition:filter .18s,transform .18s;transform-origin:left}.pattern-season:hover .pattern-season-fill,.pattern-season:focus-visible .pattern-season-fill{filter:saturate(1.35);transform:scaleY(1.5)}
 .pattern-foot{font-size:10px;color:#68776D;line-height:1.6;margin-top:14px}.pattern-focus{background:#F4F8F3;border:1px solid #E2EBE0;border-radius:8px;padding:16px 18px;margin-top:20px;color:#4A6551;font-size:12px;line-height:1.65}.pattern-focus strong{font-weight:650;color:#2A4933}
 @media(max-width:850px){.pattern-layout{grid-template-columns:1fr}}@media(max-width:520px){.pattern-card{padding:15px}.pattern-months,.pattern-month-labels{gap:3px}.pattern-seasons{padding:13px}.pattern-season-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:640px){.st-key-pattern_filters [data-testid="stHorizontalBlock"]{flex-wrap:wrap !important}.st-key-pattern_filters [data-testid="stColumn"]{flex:1 1 100% !important;width:100% !important}}
+@media(prefers-reduced-motion:reduce){.pattern-fill,.pattern-month .bar,.pattern-month em,.pattern-season,.pattern-season-fill{transition:none !important}}
 </style>""", unsafe_allow_html=True)
 
 
@@ -74,15 +99,28 @@ def _charts(pattern: RecordPattern) -> None:
     )
 
 
-def _summary_csv(pattern: RecordPattern) -> bytes:
+def _summary_csv(
+    pattern: RecordPattern, scope: str, type_filter: str,
+    period_start: date, period_end: date,
+) -> bytes:
     """Export only the aggregates visible in the record-pattern dashboard."""
     output = StringIO(newline="")
     writer = csv.writer(output)
-    writer.writerow(("구분", "항목", "기록 건수"))
-    writer.writerows(("요일", f"{_DAYS[index]}요일", count) for index, count in enumerate(pattern.weekdays))
-    writer.writerows(("월", f"{index}월", count) for index, count in enumerate(pattern.months, 1))
-    writer.writerows(("계절", SEASONS[index], count) for index, count in enumerate(pattern.seasons))
-    writer.writerows(("사고유형", name, count) for name, count in pattern.accident_types)
+    writer.writerow(("구분", "항목", "기록 건수", "기록 범위", "유형 검색", "분석 시작일", "분석 종료일"))
+    rows = [
+        ("전체", "등록 기록", pattern.total),
+        *(("요일", f"{_DAYS[index]}요일", count) for index, count in enumerate(pattern.weekdays)),
+        *(("월", f"{index}월", count) for index, count in enumerate(pattern.months, 1)),
+        *(("계절", SEASONS[index], count) for index, count in enumerate(pattern.seasons)),
+        *(("사고유형 상위 6", name, count) for name, count in pattern.accident_types),
+    ]
+    writer.writerows(
+        tuple(_csv_cell(value) if isinstance(value, str) else value for value in (
+            *row, scope or "범위 미입력", type_filter or "전체",
+            period_start.isoformat(), period_end.isoformat(),
+        ))
+        for row in rows
+    )
     return output.getvalue().encode("utf-8-sig")
 
 
@@ -132,13 +170,56 @@ def show_pattern_dashboard() -> None:
                         st.session_state["field_incident_name"] = file.name
                         st.session_state["field_incident_scope"] = scope.strip()
                         st.session_state["field_incident_token"] = token
+                        st.session_state.pop("field_pattern_range", None)
+                        st.session_state.pop("field_pattern_type_filter", None)
                         st.rerun()
         st.download_button("CSV 열 형식 받기", data="발생일,사고유형\n".encode("utf-8-sig"), file_name="사고기록_열형식.csv", mime="text/csv")
     frame: pd.DataFrame | None = st.session_state.get("field_incident_frame")
     if frame is None:
         st.markdown('<div class="field-panel"><div class="field-panel-title">기록을 올리면 분포가 나타납니다</div><p class="field-sub">샘플로 만든 숫자를 현장 경향으로 표시하지 않습니다.</p></div>', unsafe_allow_html=True)
         return
-    pattern = summarize_records(frame)
+    data_start = frame["발생일"].min().date()
+    data_end = frame["발생일"].max().date()
+    with st.container(key="pattern_filters"):
+        range_col, type_col = st.columns([1.15, 1], gap="small")
+        with range_col:
+            period_value = st.date_input(
+                "분석 기간", value=(data_start, data_end), min_value=data_start, max_value=data_end,
+                key="field_pattern_range",
+            )
+        with type_col:
+            type_filter = st.text_input(
+                "사고유형 좁혀 보기",
+                placeholder="예: 떨어짐 · 입력한 글자를 포함한 유형만 집계",
+                max_chars=100,
+                key="field_pattern_type_filter",
+            ).strip()
+    if (
+        isinstance(period_value, (tuple, list)) and len(period_value) == 2
+        and all(isinstance(value, date) for value in period_value)
+    ):
+        period_start, period_end = period_value
+        period_mask = frame["발생일"].dt.date.between(period_start, period_end)
+        filtered_frame = frame.loc[period_mask]
+    else:
+        period_start, period_end = data_start, data_end
+        filtered_frame = frame
+        st.caption("종료 날짜를 선택하면 기간 범위를 적용합니다.")
+    if filtered_frame.empty:
+        st.info("선택한 기간에 사고 기록이 없습니다. 날짜 범위를 조정하세요.")
+        return
+    if type_filter:
+        filtered_frame = filtered_frame.loc[
+            filtered_frame["사고유형"].astype(str).str.contains(type_filter, case=False, regex=False)
+        ]
+        if filtered_frame.empty:
+            st.info(f"‘{type_filter}’를 포함한 사고유형이 없습니다. 검색어를 줄이거나 지우면 전체 기록을 다시 볼 수 있습니다.")
+            return
+        st.caption(
+            f"유형 필터 적용 · {len(filtered_frame):,}/{len(frame):,}건 · "
+            f"{filtered_frame['사고유형'].nunique():,}개 유형"
+        )
+    pattern = summarize_records(filtered_frame)
     st.markdown(
         '<div class="field-metrics action-metrics">'
         f'<div class="field-metric"><span>등록 기록</span><strong>{pattern.total:,}</strong><small>건</small></div>'
@@ -181,13 +262,16 @@ def show_pattern_dashboard() -> None:
     export_col, clear_col = st.columns([1, 1], gap="small")
     with export_col:
         st.download_button(
-            "집계표 CSV 다운로드", data=_summary_csv(pattern),
+            "집계표 CSV 다운로드",
+            data=_summary_csv(
+                pattern, st.session_state.get("field_incident_scope", ""), type_filter,
+                period_start, period_end,
+            ),
             file_name=f"사고기록_집계_{today_korea():%Y%m%d}.csv", mime="text/csv",
             key="field_incident_summary_download",
         )
     with clear_col:
-        if st.button("연결한 사고 기록 해제", key="field_incident_clear"):
-            for key in ("field_incident_frame", "field_incident_name", "field_incident_scope", "field_incident_token"):
-                st.session_state.pop(key, None)
-            st.session_state["field_incident_upload_version"] = upload_version + 1
-            st.rerun()
+        st.button(
+            "연결한 사고 기록 해제", key="field_incident_clear",
+            on_click=_clear_incident_data, args=(upload_version,),
+        )

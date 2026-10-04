@@ -33,6 +33,14 @@ def reset_filters(earliest: date, latest: date) -> None:
     st.session_state["quick_severity"] = "전체"
 
 
+def _safe_csv_cell(value: object) -> object:
+    """Prevent spreadsheet formula execution in exported text from uploaded CSVs."""
+    if not isinstance(value, str):
+        return value
+    first = value.lstrip(" \t\r\n\v\f\x00\ufeff")[:1]
+    return f"'{value}" if first in {"=", "+", "-", "@"} else value
+
+
 def set_view(view: str) -> None:
     st.session_state["view"] = view
     st.query_params["page"] = view
@@ -299,9 +307,13 @@ def show_records(filtered: pd.DataFrame) -> None:
                 "휴업일수": st.column_config.NumberColumn("휴업일수", format="%d일"),
             },
         )
+        export_frame = display.copy()
+        for column in export_frame.columns:
+            if pd.api.types.is_object_dtype(export_frame[column]) or pd.api.types.is_string_dtype(export_frame[column]):
+                export_frame[column] = export_frame[column].map(_safe_csv_cell)
         st.download_button(
             "현재 검색 결과 CSV 다운로드",
-            data=display.to_csv(index=False).encode("utf-8-sig"),
+            data=export_frame.to_csv(index=False).encode("utf-8-sig"),
             file_name="산업재해_검색결과.csv",
             mime="text/csv",
         )

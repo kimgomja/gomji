@@ -11,13 +11,24 @@ from uuid import uuid4
 import pandas as pd
 import streamlit as st
 
-from shining_chatbot.action_data import FieldAction, flag_changed_work, new_action
+from shining_chatbot.action_data import (
+    FieldAction,
+    action_attention_flags,
+    action_due_kst,
+    flag_changed_work,
+    new_action,
+)
 from shining_chatbot.business_time import now_korea, today_korea
 from shining_chatbot.case_summary import SIF_SOURCE_URL, local_cases_available, summarize_cases
 from shining_chatbot.field_state import export_backup, import_backup
 from shining_chatbot.field_session import ONE_OFF_WIDGET_KEYS, clear_site_context
 from shining_chatbot.plan_revision import day_revision_token, make_revision
-from shining_chatbot.record_pattern import SEASONS, context_signals, season_index, summarize_records
+from shining_chatbot.record_pattern import (
+    SEASONS,
+    context_signals,
+    season_index,
+    summarize_records,
+)
 from shining_chatbot.tbm_data import daily_actions
 from shining_chatbot.work_plan import NoWorkConfirmation, WorkItem, WorkPlan, compare_plans, overlapping_pairs, read_work_plan
 from shining_chatbot.weather_panel import show_weather_panel
@@ -65,6 +76,7 @@ def _styles() -> None:
 .field-note{border-left:2px solid #9BAB9D;background:#F4F7F3;padding:12px 15px;font-size:12px;line-height:1.65;color:#536158;margin:0 0 18px}
 .field-detail{font-size:12px;line-height:1.7;color:#57635A}
 .field-detail b{font-weight:600;color:#344239}
+.field-copy{font-size:12px;line-height:1.7;color:#57635A;white-space:pre-wrap;overflow-wrap:anywhere}
 .field-muted{font-size:11px;color:#68746B;line-height:1.6}
 .field-timeline{border:1px solid #E3E8E2;border-radius:10px;background:#fff;padding:16px 18px 17px;margin:0 0 18px}
 .field-timeline-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:17px}
@@ -120,13 +132,19 @@ def _styles() -> None:
 .action-state{font-size:10px;padding:5px 8px;color:#5F7564;background:#EFF4EF;border:1px solid #DCE8DD;border-radius:5px;white-space:nowrap}
 .action-state.late{color:#806642;background:#F8F3EA;border-color:#EADFCB}
 .action-state.done{color:#78877B;background:#F2F5F1;border-color:#E6ECE5}
+.st-key-field_action_filter [role="radiogroup"]{gap:12px}
 @media(max-width:760px){.field-hero{display:block;padding:20px}.field-date{display:inline-flex;margin-top:12px;text-align:left}.field-metrics{grid-template-columns:1fr}.field-item{grid-template-columns:48px minmax(0,1fr)}.field-status{grid-column:2;width:max-content}.field-panel{padding:17px}.st-key-field_actions [data-testid="stHorizontalBlock"]{flex-wrap:wrap}}
 @media(max-width:900px){.action-metrics{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:760px){.action-row{grid-template-columns:44px minmax(0,1fr);gap:9px}.action-state{grid-column:2;width:max-content}.action-metrics{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:760px){.field-timeline-axis,.field-timeline-row{grid-template-columns:92px minmax(0,1fr);gap:8px}.field-timeline-head small{display:none}.field-timeline-track,.field-timeline-axis>div{margin-right:18px}.field-timeline-tip{white-space:normal;min-width:130px}}
 @media(max-width:760px){.field-attention-row{grid-template-columns:43px minmax(0,1fr)}.field-attention-owner{grid-column:2}}
+@media(max-width:640px){.st-key-field_action_filter [role="radiogroup"]{flex-wrap:wrap;gap:7px 12px}.st-key-field_plan_gaps [data-testid="stHorizontalBlock"]{flex-wrap:wrap!important}.st-key-field_plan_gaps [data-testid="stColumn"]{flex:1 1 100%!important;width:100%!important}}
 @media(prefers-reduced-motion:reduce){.field-timeline-bar,.field-timeline-tip,.field-case-fill,.field-case-tip{transition:none !important}}
 </style>""", unsafe_allow_html=True)
+
+
+def _plain_block(value: str) -> None:
+    st.markdown(f'<div class="field-copy">{escape(value)}</div>', unsafe_allow_html=True)
 
 
 def _load_upload(content: bytes) -> WorkPlan | None:
@@ -445,20 +463,23 @@ def _attention(
     visible_actions = daily_actions(plan, selected_day, actions)
     visible_actions += tuple(
         action for action in actions
-        if action.status == "open" and action.due_at.date() <= selected_day
+        if action.status == "open" and action_due_kst(action).date() <= selected_day
         and action not in visible_actions
     )
-    for action in sorted(
+    open_actions = sorted(
         (action for action in visible_actions if action.status == "open"),
-        key=lambda action: action.due_at,
-    ):
-        late = action.due_at < now_korea()
-        state = "계획 변경 · 재확인" if action.needs_review else "기한 지남" if late else "조치 대기"
+        key=lambda action: (action_due_kst(action), action.action_id),
+    )
+    checked_at = now_korea()
+    for action in open_actions:
+        due_at = action_due_kst(action)
+        flags = action_attention_flags(action, checked_at)
+        state = " · ".join(flags) if flags else "조치 대기"
         rows.append(
             '<div class="field-attention-row">'
-            f'<span class="field-attention-time">{action.due_at:%H:%M}</span>'
+            f'<span class="field-attention-time">{due_at:%H:%M}</span>'
             f'<div><div class="field-attention-work">{escape(action.description)}</div>'
-            f'<div class="field-attention-reason">{state} · 기한 {action.due_at:%m.%d %H:%M}</div></div>'
+            f'<div class="field-attention-reason">{state} · 기한 {due_at:%m.%d %H:%M}</div></div>'
             f'<span class="field-attention-owner">{escape(action.assignee)}</span></div>'
         )
     if rows:
@@ -469,6 +490,19 @@ def _attention(
         if len(rows) > 6:
             with st.expander(f"추가 확인 항목 {len(rows) - 6}건"):
                 st.markdown('<div class="field-attention">' + "".join(rows[6:]) + '</div>', unsafe_allow_html=True)
+        if open_actions and st.button(
+            "미완료 조치 목록 열기", key=f"field_attention_actions_{selected_day:%Y%m%d}",
+            width="stretch",
+        ):
+            target = open_actions[0]
+            st.session_state["field_action_filter"] = "미완료"
+            st.session_state["field_action_query"] = ""
+            st.session_state["field_selected_action"] = (
+                f"{action_due_kst(target):%m.%d %H:%M} · {target.description} ({target.action_id})"
+            )
+            st.session_state["view"] = "actions"
+            st.query_params["page"] = "actions"
+            st.rerun()
     else:
         st.success("이 날짜의 현장 확인과 지정된 조치가 모두 완료로 기록됐습니다. 작업 조건이 바뀌면 다시 확인하세요.")
 
@@ -517,6 +551,10 @@ def _case_chart(item: WorkItem) -> None:
 
 def _select_field_day(day: date) -> None:
     st.session_state["field_day"] = day
+
+
+def _select_field_item(choice: str) -> None:
+    st.session_state["field_item_choice"] = choice
 
 
 def _show_record_context(day: date) -> None:
@@ -574,7 +612,7 @@ def _daily(plan: WorkPlan) -> None:
     day_ids = {item.work_id for item in daily}
     relevant_actions = [
         action for action in actions if action.status == "open"
-        if action.work_id in day_ids or action.due_at.date() <= selected
+        if action.work_id in day_ids or action_due_kst(action).date() <= selected
         or (action.needs_review and (action.work_day is None or action.work_day <= selected))
     ]
     pairs = overlapping_pairs(plan.items, selected)
@@ -596,6 +634,37 @@ def _daily(plan: WorkPlan) -> None:
         f'<div class="field-metric"><span>연관 미완료 조치</span><strong>{len(relevant_actions)}</strong><small>건</small></div>'
         '</div>', unsafe_allow_html=True,
     )
+    incomplete = []
+    for item in daily:
+        missing = [
+            label for label, value in (
+                ("세부 위치", item.location),
+                ("주요 장비", item.equipment),
+                ("작업책임자", item.owner),
+                ("계획된 안전조치", item.planned_controls),
+            ) if not (value or "").strip()
+        ]
+        if missing:
+            incomplete.append((item, missing))
+    if incomplete:
+        with st.expander(f"계획 입력 확인 · {len(incomplete)}개 작업에 미입력 항목", expanded=False):
+            with st.container(key="field_plan_gaps"):
+                st.caption("계획서에서 비어 있는 세부 항목입니다. 해당 없음인지, 작업 전에 확인할 내용인지 현장 기준으로 검토하세요.")
+                for item, missing in incomplete:
+                    row_col, button_col = st.columns([3, 1], vertical_alignment="center")
+                    with row_col:
+                        st.markdown(
+                            f'<div><strong>{item.start:%H:%M} · {escape(item.activity)}</strong></div>',
+                            unsafe_allow_html=True,
+                        )
+                        st.caption("미입력 · " + " / ".join(missing))
+                    with button_col:
+                        st.button(
+                            "작업 확인", key=f"plan_gap_{item.work_id}",
+                            on_click=_select_field_item,
+                            args=(f"{item.start:%H:%M}  {item.activity} · {item.area} ({item.work_id})",),
+                            width="stretch",
+                        )
     relevant_revisions = [
         (revision, tuple(entry for entry in revision.entries if entry.day == selected))
         for revision in revisions
@@ -679,6 +748,12 @@ def _daily(plan: WorkPlan) -> None:
         if relevant_actions:
             st.warning(f"이 날짜까지 기한이 되었거나 재확인이 필요한 미완료 조치 {len(relevant_actions)}건이 남아 있습니다.")
             if st.button("남은 조치 확인", key="field_empty_actions"):
+                target = min(relevant_actions, key=lambda action: (action_due_kst(action), action.action_id))
+                st.session_state["field_action_filter"] = "미완료"
+                st.session_state["field_action_query"] = ""
+                st.session_state["field_selected_action"] = (
+                    f"{action_due_kst(target):%m.%d %H:%M} · {target.description} ({target.action_id})"
+                )
                 st.session_state["view"] = "actions"
                 st.query_params["page"] = "actions"
                 st.rerun()
@@ -714,18 +789,26 @@ def _daily(plan: WorkPlan) -> None:
             unsafe_allow_html=True,
         )
         st.markdown('**계획서에 적힌 안전조치**')
-        st.write(item.planned_controls or "입력된 내용이 없습니다.")
+        _plain_block(item.planned_controls or "입력된 내용이 없습니다.")
         st.markdown('**시작 전 확인할 내용**')
-        st.write(item.follow_up or "추가 확인 내용이 없습니다. 현장 상태는 별도로 확인하세요.")
+        _plain_block(item.follow_up or "추가 확인 내용이 없습니다. 현장 상태는 별도로 확인하세요.")
         st.markdown(f'<div class="field-muted">출처 · {escape(item.sheet)} {item.row}행 · 원문 검토 상태: {escape(item.review_status or "미입력")}</div>', unsafe_allow_html=True)
         if not item.equipment:
             st.warning("주요 장비가 입력되지 않았습니다. 작업 시작 전 확인하세요.")
         linked_actions = [action for action in actions if action.work_id == item.work_id]
         st.markdown('**담당 조치**')
         if linked_actions:
-            for action in sorted(linked_actions, key=lambda action: action.due_at):
-                status = "완료" if action.status == "done" else "재확인" if action.needs_review else "미완료"
-                st.caption(f"{status} · {action.description} · {action.assignee} · {action.due_at:%m.%d %H:%M}")
+            checked_at = now_korea()
+            for action in sorted(linked_actions, key=action_due_kst):
+                due_at = action_due_kst(action)
+                status = "완료" if action.status == "done" else (
+                    " · ".join(action_attention_flags(action, checked_at)) or "미완료"
+                )
+                st.markdown(
+                    f'<div class="field-muted">{escape(status)} · {escape(action.description)} · '
+                    f'{escape(action.assignee)} · {due_at:%m.%d %H:%M}</div>',
+                    unsafe_allow_html=True,
+                )
         else:
             st.caption("이 작업에 지정된 조치가 없습니다.")
         with st.expander("담당자와 기한이 있는 조치 추가"):
@@ -746,9 +829,13 @@ def _daily(plan: WorkPlan) -> None:
         st.markdown('**현장 확인 기록**')
         current_review = reviews.get(item.work_id, {})
         if current_review:
-            st.caption(f"{current_review['status']} · {current_review['reviewer']} · {current_review['at']}")
+            st.markdown(
+                f'<div class="field-muted">{escape(current_review["status"])} · '
+                f'{escape(current_review["reviewer"])} · {escape(current_review["at"])}</div>',
+                unsafe_allow_html=True,
+            )
             if current_review.get("note"):
-                st.write(current_review["note"])
+                _plain_block(current_review["note"])
         with st.form(f"field_review_{item.work_id}"):
             review_status = st.selectbox("확인 상태", ["확인 중", "조치 필요", "확인 완료"], key=f"review_status_{item.work_id}")
             reviewer = st.text_input("확인자 *", max_chars=100, key=f"reviewer_{item.work_id}")

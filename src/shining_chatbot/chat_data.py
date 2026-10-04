@@ -1,4 +1,4 @@
-"""Answer regional and monthly questions from the dashboard's current CSV."""
+"""Answer regional, monthly and seasonal questions from the current accident CSV."""
 
 from __future__ import annotations
 
@@ -61,15 +61,25 @@ def answer_data_question(
     compact = re.sub(r"\s+", "", question).lower()
     weather_question = any(term in compact for term in (
         "날씨", "기상", "기온", "강수", "비오는날", "비가오는날", "비올때", "비오면",
-        "눈오는날", "폭염", "한파", "장마", "강풍", "호우", "더울때", "더운날", "추울때", "추운날",
+        "눈오는날", "눈오면", "눈이오면", "눈올때", "우천", "폭염", "한파", "장마", "강풍", "호우",
+        "더울때", "더운날", "추울때", "추운날", "폭우", "폭설", "강설",
     ))
     incident_question = any(term in compact for term in ("사고", "재해"))
     pattern_terms = (
         "통계", "건수", "몇건", "추이", "경향", "패턴", "계절별", "계절마다", "상관", "영향",
         "비교", "차이", "달라", "관계있", "따라다르", "발생률",
         "많아", "많았", "많을", "더많", "높아", "높았", "더높", "증가", "감소", "더자주",
+        "날씨별", "기상별", "비오는날", "비가오는날", "비올때", "비가올때", "우천", "강우", "강수시",
+        "폭우", "폭설", "강설",
+        "눈오는날", "눈오면", "눈이오면", "눈올때",
+        "기온별", "폭염때", "한파때",
     )
     pattern_question = any(term in compact for term in pattern_terms)
+    prevention_question = any(term in compact for term in (
+        "주의사항", "주의할", "조심", "예방", "안전수칙", "위험성평가", "대책", "작업전", "확인할점",
+    ))
+    if prevention_question:
+        return None
     if weather_question and incident_question and pattern_question:
         return {
             "role": "assistant",
@@ -90,7 +100,7 @@ def answer_data_question(
     )
     region = _region_in(question, frame)
     context_note = ""
-    if monthly and region is None and "전체" not in question:
+    if (monthly or season_question) and region is None and "전체" not in question:
         previous_region = next(
             (
                 previous_region
@@ -101,7 +111,8 @@ def answer_data_question(
             None,
         )
         if previous_region and _matching_rows(frame, previous_region).empty:
-            context_note = f"직전에 물어본 {previous_region} 기록은 현재 CSV에 없어 전체 지역의 그래프를 보여드립니다. "
+            view_name = "그래프" if monthly else "계절별 기록"
+            context_note = f"직전에 물어본 {previous_region} 기록은 현재 CSV에 없어 전체 지역의 {view_name}를 보여드립니다. "
         else:
             region = previous_region
     if not monthly and not season_question and region is None:
@@ -128,7 +139,7 @@ def answer_data_question(
             "role": "assistant",
             "status": "data_answer",
             "content": (
-                f"**{source_label} · {subject} 계절별 사고 기록** · "
+                context_note + f"**{source_label} · {subject} 계절별 사고 기록** · "
                 f"{selected['발생일'].min():%Y.%m.%d}–{selected['발생일'].max():%Y.%m.%d}\n\n"
                 f"{counts}\n\n"
                 "발생일의 달력상 계절로 센 건수입니다. 당시 기상 상태나 작업량·근로자 수를 보정한 사고율, "
@@ -137,8 +148,8 @@ def answer_data_question(
         }
 
     if monthly:
-        latest = frame["발생일"].max()
-        earliest = frame["발생일"].min()
+        latest = selected["발생일"].max()
+        earliest = selected["발생일"].min()
         start = max(earliest.to_period("M"), latest.to_period("M") - 23).start_time.date()
         end = latest.date()
         in_period = selected.loc[selected["발생일"].dt.date.between(start, end)]

@@ -5,19 +5,39 @@ from __future__ import annotations
 from datetime import date, datetime
 from html import escape
 
+import pandas as pd
 import streamlit as st
 
-from shining_chatbot.action_data import FieldAction, finish_action, reopen_action
+from shining_chatbot.action_data import (
+    FieldAction,
+    action_attention_flags,
+    action_due_kst,
+    finish_action,
+    is_action_overdue,
+    reopen_action,
+)
 from shining_chatbot.business_time import now_korea, today_korea
 from shining_chatbot.field_dashboard import _styles
 from shining_chatbot.work_plan import WorkPlan
 
 
-def _save_action(updated: FieldAction) -> None:
+def _save_action(updated: FieldAction, notice: str) -> None:
     st.session_state["field_actions"] = tuple(
         updated if action.action_id == updated.action_id else action
         for action in st.session_state.get("field_actions", ())
     )
+    st.session_state["field_action_notice"] = notice
+
+
+def _csv_cell(value: str) -> str:
+    """Keep user-entered strings inert when a CSV is opened in a spreadsheet."""
+    text = str(value)
+    first = text.lstrip(" \t\r\n\v\f\x00\ufeff")[:1]
+    return f"'{text}" if first in {"=", "+", "-", "@"} else text
+
+
+def _reset_action_selection() -> None:
+    st.session_state.pop("field_selected_action", None)
 
 
 def show_action_dashboard() -> None:
@@ -41,8 +61,8 @@ def show_action_dashboard() -> None:
     actions: tuple[FieldAction, ...] = tuple(st.session_state.get("field_actions", ()))
     now = now_korea()
     open_actions = [action for action in actions if action.status == "open"]
-    overdue = [action for action in open_actions if action.due_at < now]
-    due_today = [action for action in open_actions if action.due_at.date() == now.date()]
+    overdue = [action for action in open_actions if is_action_overdue(action, now)]
+    due_today = [action for action in open_actions if action_due_kst(action).date() == now.date()]
     completed = [action for action in actions if action.status == "done"]
     st.markdown(
         '<div class="field-metrics action-metrics">'
@@ -52,6 +72,8 @@ def show_action_dashboard() -> None:
         f'<div class="field-metric"><span>완료 기록</span><strong>{len(completed)}</strong><small>건</small></div>'
         '</div>', unsafe_allow_html=True,
     )
+    if notice := st.session_state.pop("field_action_notice", None):
+        st.success(notice)
     if not actions:
         st.markdown(
             '<div class="field-panel"><div class="field-panel-title">등록된 조치가 없습니다</div>'
@@ -61,23 +83,49 @@ def show_action_dashboard() -> None:
         return
 
     work_by_id = {item.work_id: item for item in plan.items}
-    filter_label = st.radio("조회 상태", ["미완료", "전체", "완료"], horizontal=True, key="field_action_filter")
-    visible = (
-        open_actions if filter_label == "미완료" else completed if filter_label == "완료" else list(actions)
+    filter_label = st.radio(
+        "조회 상태", ["미완료", "기한 지남", "재확인", "전체", "완료"],
+        horizontal=True, key="field_action_filter", on_change=_reset_action_selection,
     )
-    visible.sort(key=lambda action: (action.status == "done", action.due_at, action.action_id))
+    query = st.text_input(
+        "조치 검색", placeholder="조치 내용, 담당자, 작업명 또는 ID",
+        key="field_action_query", label_visibility="collapsed", on_change=_reset_action_selection,
+    ).strip().casefold()
+    if filter_label == "미완료":
+        visible = open_actions
+    elif filter_label == "기한 지남":
+        visible = [action for action in open_actions if is_action_overdue(action, now)]
+    elif filter_label == "재확인":
+        visible = [action for action in open_actions if action.needs_review]
+    elif filter_label == "완료":
+        visible = completed
+    else:
+        visible = list(actions)
+    if query:
+        visible = [
+            action for action in visible
+            if query in " ".join((
+                action.description, action.assignee, action.action_id, action.work_id,
+                work_by_id[action.work_id].activity if action.work_id in work_by_id else "",
+            )).casefold()
+        ]
+    visible.sort(key=lambda action: (action.status == "done", action_due_kst(action), action.action_id))
     if not visible:
-        st.info("선택한 상태의 조치가 없습니다.")
+        st.info("조건에 맞는 조치가 없습니다. 검색어를 지우거나 다른 상태를 선택해 보세요.")
         return
     rows = []
     for action in visible:
         work = work_by_id.get(action.work_id)
         name = work.activity if work else "계획에서 제외된 작업"
-        late = action.status == "open" and action.due_at < now
-        status = "재확인" if action.needs_review else "기한 지남" if late else "완료" if action.status == "done" else "대기"
+        due_at = action_due_kst(action)
+        late = is_action_overdue(action, now)
+        flags = action_attention_flags(action, now)
+        status = " · ".join(flag.replace("계획 변경 ", "") for flag in flags) or (
+            "완료" if action.status == "done" else "대기"
+        )
         rows.append(
             '<div class="action-row">'
-            f'<span class="action-due">{action.due_at:%m.%d}<small>{action.due_at:%H:%M}</small></span>'
+            f'<span class="action-due">{due_at:%m.%d}<small>{due_at:%H:%M}</small></span>'
             f'<div><div class="action-name">{escape(action.description)}</div>'
             f'<div class="action-context">{escape(name)} · {escape(action.assignee)}</div></div>'
             f'<span class="action-state {"late" if late or action.needs_review else "done" if action.status == "done" else ""}">{status}</span>'
@@ -87,8 +135,36 @@ def show_action_dashboard() -> None:
         '<div class="action-list"><div class="field-panel-title">조치 목록</div>' + "".join(rows) + '</div>',
         unsafe_allow_html=True,
     )
+    export_rows = []
+    for entry in visible:
+        linked_work = work_by_id.get(entry.work_id)
+        is_late = is_action_overdue(entry, now)
+        export_rows.append({
+            "현장": plan.site,
+            "조치 ID": entry.action_id,
+            "작업 ID": entry.work_id,
+            "작업명": linked_work.activity if linked_work else "계획에서 제외된 작업",
+            "조치 내용": entry.description,
+            "담당자": entry.assignee,
+            "기한": action_due_kst(entry).isoformat(timespec="minutes"),
+            "상태": "완료" if entry.status == "done" else "재확인" if entry.needs_review else "기한 지남" if is_late else "미완료",
+            "계획 재확인 필요": "예" if entry.needs_review else "아니오",
+            "기한 경과": "예" if is_late else "아니오",
+            "등록 시각": entry.created_at.isoformat(timespec="minutes"),
+            "변경 이력 수": len(entry.events),
+        })
+    export_frame = pd.DataFrame(export_rows)
+    for column in ("현장", "조치 ID", "작업 ID", "작업명", "조치 내용", "담당자", "상태", "계획 재확인 필요"):
+        export_frame[column] = export_frame[column].map(_csv_cell)
+    st.download_button(
+        "현재 조치 목록 CSV 받기",
+        data=export_frame.to_csv(index=False).encode("utf-8-sig"),
+        file_name=f"조치목록_{today_korea():%Y%m%d}.csv",
+        mime="text/csv",
+        key="field_action_export",
+    )
     labels = {
-        f"{action.due_at:%m.%d %H:%M} · {action.description} ({action.action_id})": action
+        f"{action_due_kst(action):%m.%d %H:%M} · {action.description} ({action.action_id})": action
         for action in visible
     }
     selected = st.selectbox("자세히 볼 조치", list(labels), key="field_selected_action")
@@ -99,8 +175,16 @@ def show_action_dashboard() -> None:
         st.subheader(action.description)
         st.caption(
             f"연결 작업: {work.activity if work else '계획에서 제외된 작업'} · "
-            f"담당 {action.assignee} · 기한 {action.due_at:%Y.%m.%d %H:%M}"
+            f"담당 {action.assignee} · 기한 {action_due_kst(action):%Y.%m.%d %H:%M}"
         )
+        if work is not None and st.button("연결된 작업 상세 열기", key=f"open_action_work_{action.action_id}"):
+            st.session_state["field_day"] = work.day
+            st.session_state["field_item_choice"] = (
+                f"{work.start:%H:%M}  {work.activity} · {work.area} ({work.work_id})"
+            )
+            st.session_state["view"] = "field"
+            st.query_params["page"] = "field"
+            st.rerun()
         if action.needs_review:
             st.warning("연결된 작업계획이 바뀌거나 제외됐습니다. 현재 조치 내용을 다시 확인하세요.")
         if action.status == "open":
@@ -110,7 +194,7 @@ def show_action_dashboard() -> None:
                 completed_click = st.form_submit_button("완료 기록", type="primary")
             if completed_click:
                 try:
-                    _save_action(finish_action(action, actor, note))
+                    _save_action(finish_action(action, actor, note), "완료자와 실제 완료 내용을 조치 이력에 저장했습니다.")
                 except ValueError as exc:
                     st.error(str(exc))
                 else:
@@ -122,7 +206,7 @@ def show_action_dashboard() -> None:
                 reopened_click = st.form_submit_button("완료 취소 · 재개")
             if reopened_click:
                 try:
-                    _save_action(reopen_action(action, actor, reason))
+                    _save_action(reopen_action(action, actor, reason), "조치를 다시 열고 변경 이유를 이력에 저장했습니다.")
                 except ValueError as exc:
                     st.error(str(exc))
                 else:

@@ -40,6 +40,7 @@ def _location_setup() -> None:
             query = st.text_input("시·군·구 검색", placeholder="예: 수원시", max_chars=80, key="field_weather_query")
             searched = st.form_submit_button("위치 찾기")
         if searched:
+            st.session_state.pop("field_weather_candidate", None)
             try:
                 with st.spinner("현장 위치 검색 중..."):
                     st.session_state["field_location_candidates"] = _locations(query)
@@ -103,7 +104,9 @@ def show_weather_panel(day: date, items: list[WorkItem]) -> None:
             unsafe_allow_html=True,
         )
         if failed:
-            st.button("예보 다시 불러오기", key=f"field_weather_retry_{day}")
+            if st.button("예보 다시 불러오기", key=f"field_weather_retry_{day}"):
+                _forecast.clear()
+                st.rerun()
         _location_setup()
         return
     values = (
